@@ -1,56 +1,66 @@
 """Finnhub news fetcher."""
-import sys
-import os
-from typing import List, Optional
+from typing import List
 from datetime import datetime, timedelta
+import httpx
 
-# Add parent directories to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from models.raw_news import RawNewsItem
 
-try:
-    from backend.app.external.finnhub_client import FinnhubClient
-except ImportError:
-    # Fallback for direct execution
-    import httpx
 
-    class FinnhubClient:
-        """Fallback Finnhub client."""
-        def __init__(self, api_key: str):
-            self.api_key = api_key
-            self.base_url = "https://finnhub.io/api/v1"
-            self.client = httpx.AsyncClient(timeout=10.0)
+class FinnhubClient:
+    """Finnhub API client."""
 
-        async def get_company_news(self, symbol: str, from_date: str, to_date: str):
-            response = await self.client.get(
-                f"{self.base_url}/company-news",
-                params={
-                    "symbol": symbol.upper(),
-                    "from": from_date,
-                    "to": to_date,
-                    "token": self.api_key
+    def __init__(self, api_key: str):
+        """
+        Initialize Finnhub client.
+
+        Args:
+            api_key: Finnhub API key
+        """
+        self.api_key = api_key
+        self.base_url = "https://finnhub.io/api/v1"
+        self.client = httpx.AsyncClient(timeout=10.0)
+
+    async def get_company_news(self, symbol: str, from_date: str, to_date: str):
+        """
+        Get company news from Finnhub API.
+
+        Args:
+            symbol: Stock ticker symbol
+            from_date: Start date (YYYY-MM-DD)
+            to_date: End date (YYYY-MM-DD)
+
+        Returns:
+            List of news articles
+        """
+        response = await self.client.get(
+            f"{self.base_url}/company-news",
+            params={
+                "symbol": symbol.upper(),
+                "from": from_date,
+                "to": to_date,
+                "token": self.api_key
+            }
+        )
+        if response.status_code == 200:
+            articles = response.json()
+            return [
+                {
+                    "id": str(article.get("id", "")),
+                    "headline": article.get("headline", ""),
+                    "summary": article.get("summary", ""),
+                    "url": article.get("url", ""),
+                    "datetime": article.get("datetime", 0),
+                    "source": article.get("source", ""),
+                    "category": article.get("category", ""),
+                    "image": article.get("image", ""),
                 }
-            )
-            if response.status_code == 200:
-                articles = response.json()
-                return [
-                    {
-                        "id": str(article.get("id", "")),
-                        "headline": article.get("headline", ""),
-                        "summary": article.get("summary", ""),
-                        "url": article.get("url", ""),
-                        "datetime": article.get("datetime", 0),
-                        "source": article.get("source", ""),
-                        "category": article.get("category", ""),
-                        "image": article.get("image", ""),
-                    }
-                    for article in articles[:20]
-                ]
-            return []
+                for article in articles[:20]
+            ]
+        return []
 
-        async def close(self):
-            await self.client.aclose()
-
-from ..models.raw_news import RawNewsItem
+    async def close(self):
+        """Close the HTTP client."""
+        await self.client.aclose()
 
 
 class FinnhubNewsFetcher:

@@ -1,19 +1,14 @@
 """Test script for news fetching system."""
 import asyncio
 import os
-import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
 
-# Add parent directory to path
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
-
-from fetch_news.fetchers.finnhub_fetcher import FinnhubNewsFetcher
-from fetch_news.storage.raw_news_storage import RawNewsStorage
-from fetch_news.processors.news_processor import NewsProcessor
-from backend.app.db.stock_news import StockNewsDB
+from fetchers.finnhub_fetcher import FinnhubNewsFetcher
+from storage.raw_news_storage import RawNewsStorage
+from processors.news_processor import NewsProcessor
+from db.stock_news import StockNewsDB
 
 
 async def main():

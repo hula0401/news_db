@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from supabase import Client
 import asyncio
 
-from ..models.raw_news import RawNewsItem, ProcessingStatus
+from models.raw_news import RawNewsItem, ProcessingStatus
 
 
 class RawNewsStorage:

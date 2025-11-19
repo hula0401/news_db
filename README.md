@@ -54,29 +54,35 @@ The Data Engine provides a complete pipeline for:
 ## Directory Structure
 
 ```
-backend/app/news_engine/
+news_db/
 ├── __init__.py              # Main exports
-├── engine.py                # NewsEngine orchestrator
 ├── README.md                # This file
+├── SETUP.md                 # Setup and installation guide
+├── test_fetch_news.py       # Test script
+├── schema.sql               # Main database schema
+├── schema_stock_news.sql    # Stock news table schema
+├── pyproject.toml           # UV project configuration
+├── .env                     # Environment variables (not in git)
 │
 ├── models/                  # Data models
 │   ├── __init__.py
-│   ├── raw_news.py         # RawNewsItem, ProcessingStatus
-│   └── processed_news.py   # ProcessedNewsItem
+│   └── raw_news.py         # RawNewsItem, ProcessingStatus
 │
 ├── fetchers/               # News fetching
 │   ├── __init__.py
-│   ├── api_fetcher.py      # APINewsFetcher (Finnhub, Polygon, etc.)
-│   └── watchlist_fetcher.py # WatchlistNewsFetcher (user watchlists + top 10)
+│   └── finnhub_fetcher.py  # FinnhubNewsFetcher (Finnhub API)
 │
 ├── processors/             # Data processing
 │   ├── __init__.py
 │   └── news_processor.py   # NewsProcessor (HTML/JSON → structured)
 │
-└── storage/                # Database operations
+├── storage/                # Database operations
+│   ├── __init__.py
+│   └── raw_news_storage.py # RawNewsStorage (stock_news_raw table)
+│
+└── db/                     # Database layer
     ├── __init__.py
-    ├── raw_news_storage.py       # RawNewsStorage (stock_news_raw table)
-    └── processed_news_storage.py # ProcessedNewsStorage (stock_news table)
+    └── stock_news.py       # StockNewsDB (stock_news table)
 ```
 
 ## Database Schema
@@ -114,137 +120,113 @@ CREATE INDEX idx_stock_news_raw_content_hash ON stock_news_raw(content_hash);
 
 Stores processed, structured news (existing table, LIFO stack).
 
+## Installation
+
+### Quick Start
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Sync dependencies
+uv sync
+
+# Run the schema files in your Supabase SQL editor
+# 1. schema.sql
+# 2. schema_stock_news.sql
+
+# Configure .env file with your credentials
+SUPABASE_NEWS_URL=<your_url>
+SUPABASE_NEWS_KEY=<your_key>
+FINNHUB_API_KEY=<your_key>
+
+# Run test
+uv run python test_fetch_news.py
+```
+
+See [SETUP.md](SETUP.md) for detailed installation and configuration instructions.
+
 ## Usage
 
 ### Basic Usage
 
 ```python
-from app.database import db_manager
-from app.news_engine import NewsEngine
+import os
+from supabase import create_client
+from fetchers.finnhub_fetcher import FinnhubNewsFetcher
+from storage.raw_news_storage import RawNewsStorage
+from processors.news_processor import NewsProcessor
+from db.stock_news import StockNewsDB
 
-# Initialize
-await db_manager.initialize()
-engine = NewsEngine(db_manager.client)
-
-# Run daily update (all watchlists + top 10 companies)
-stats = await engine.run_daily_update(
-    days_back=1,                    # Last 24 hours
-    include_top_companies=True,     # Include top 10
-    process_immediately=True        # Process right away
+# Initialize Supabase client
+supabase = create_client(
+    os.getenv("SUPABASE_NEWS_URL"),
+    os.getenv("SUPABASE_NEWS_KEY")
 )
 
-# Stats:
-# {
-#     'symbols_fetched': 25,
-#     'raw_news_fetched': 150,
-#     'raw_news_stored': 120,      # 30 duplicates skipped
-#     'raw_news_processed': 120,
-#     'processed_news_stored': 115, # 5 duplicates in stock_news
-#     'errors': [],
-#     'duration_seconds': 45.2
-# }
+# Initialize components
+fetcher = FinnhubNewsFetcher(api_key=os.getenv("FINNHUB_API_KEY"))
+raw_storage = RawNewsStorage(client=supabase)
+stock_news_db = StockNewsDB(client=supabase)
+processor = NewsProcessor(stock_news_db=stock_news_db, raw_storage=raw_storage)
 ```
 
 ### Fetch for Single Symbol
 
 ```python
 # Fetch news for AAPL (last 7 days)
-result = await engine.fetch_news_for_symbol(
-    symbol="AAPL",
-    days_back=7,
-    store_raw=True,
-    process_immediately=True
-)
-# Returns: {'symbol': 'AAPL', 'fetched': 15, 'stored': 12, 'processed': 10}
+raw_items = await fetcher.fetch_for_symbol(symbol="AAPL", days_back=7)
+stats = await raw_storage.bulk_insert(raw_items)
+print(f"Fetched: {len(raw_items)}, Stored: {stats['inserted']}")
 ```
 
 ### Process Unprocessed News
 
 ```python
 # Process up to 100 unprocessed raw news items
-stats = await engine.process_unprocessed_news(limit=100)
-# Returns: {'fetched': 50, 'processed': 45, 'stored': 40, 'failed': 5}
+stats = await processor.process_unprocessed_batch(limit=100)
+print(f"Processed: {stats['processed']}, Failed: {stats['failed']}")
 ```
 
 ### Get Statistics
 
 ```python
-stats = engine.get_stats()
-# Returns:
-# {
-#     'raw_storage': {
-#         'total': 500,
-#         'pending': 10,
-#         'processing': 0,
-#         'completed': 480,
-#         'failed': 10
-#     },
-#     'watchlist': {
-#         'total_users': 50,
-#         'users_with_watchlist': 35,
-#         'unique_symbols': 25,
-#         'symbols': ['AAPL', 'TSLA', ...],
-#         'top_companies': ['AAPL', 'MSFT', ...]
-#     }
-# }
+# Get raw storage statistics
+stats = await raw_storage.get_stats()
+print(f"Total: {stats['total']}, Pending: {stats['pending']}")
+
+# Get stock news statistics
+news_stats = await stock_news_db.get_stats()
+print(f"Total processed news: {news_stats['total']}")
 ```
 
 ## Components
 
-### 1. NewsEngine (engine.py)
+### 1. FinnhubNewsFetcher (fetchers/finnhub_fetcher.py)
 
-Main orchestrator that coordinates all components.
+Fetches news from Finnhub API.
 
-**Key Methods:**
-- `run_daily_update()` - Main scheduled job entry point
-- `fetch_news_for_symbol()` - Fetch for single symbol
-- `process_unprocessed_news()` - Process raw data
-- `get_stats()` - Get comprehensive statistics
-
-### 2. APINewsFetcher (fetchers/api_fetcher.py)
-
-Fetches news from external APIs.
-
-**Supported APIs:**
+**Supported API:**
 - **Finnhub**: 60 calls/min, company news
-- **Polygon**: 5 calls/min, ticker news
-- **NewsAPI**: 100 calls/day, market news
-- **YFinance**: Unlimited, stock news
 
 **Key Methods:**
-- `fetch_for_symbol()` - Fetch from all APIs for one symbol
-- `fetch_for_symbols()` - Concurrent fetch for multiple symbols
-- `fetch_market_news()` - General market news (NewsAPI)
+- `fetch_for_symbol()` - Fetch news for one symbol
+- `fetch_for_symbols()` - Fetch for multiple symbols
 
-### 3. WatchlistNewsFetcher (fetchers/watchlist_fetcher.py)
-
-Fetches news for user watchlists + top companies.
-
-**Top 10 Companies:**
-AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, BRK.B, V, JPM
-
-**Key Methods:**
-- `get_all_watchlist_symbols()` - Get symbols from all users
-- `get_target_symbols()` - Watchlist + top 10
-- `fetch_news_for_watchlists()` - Fetch for all symbols
-- `fetch_news_for_user()` - Fetch for single user
-- `get_stats()` - Watchlist statistics
-
-### 4. NewsProcessor (processors/news_processor.py)
+### 2. NewsProcessor (processors/news_processor.py)
 
 Converts raw HTML/JSON to structured format.
 
 **Capabilities:**
-- Parse Finnhub, Polygon, YFinance, NewsAPI JSON formats
-- Extract structured data from HTML (BeautifulSoup)
-- Extract title, summary, publish date, source
-- Fallback to metadata tags (og:title, twitter:card, etc.)
+- Parse Finnhub JSON format
+- Extract structured data (title, summary, date, source)
+- Convert raw data to processed format
 
 **Key Methods:**
-- `process_raw_item()` - Process single RawNewsItem
-- `process_batch()` - Process multiple items
+- `process_raw_item()` - Process single raw news item
+- `process_unprocessed_batch()` - Process multiple items
 
-### 5. RawNewsStorage (storage/raw_news_storage.py)
+### 3. RawNewsStorage (storage/raw_news_storage.py)
 
 Database operations for stock_news_raw table.
 
@@ -252,45 +234,21 @@ Database operations for stock_news_raw table.
 - `insert()` - Insert single raw news item
 - `bulk_insert()` - Insert multiple items
 - `get_unprocessed()` - Get pending items
-- `get_by_status()` - Filter by processing status
 - `get_by_symbol()` - Get all raw news for symbol
 - `update_processing_status()` - Update status
 - `check_duplicate()` - Check if content_hash exists
 - `delete_old_processed()` - Cleanup old data
 - `get_stats()` - Storage statistics
 
-### 6. ProcessedNewsStorage (storage/processed_news_storage.py)
+### 4. StockNewsDB (db/stock_news.py)
 
-Database operations for stock_news table (wraps existing StockNewsDB).
+Database operations for stock_news table.
 
 **Key Methods:**
-- `push_to_stack()` - Push to LIFO stack (position 1)
+- `push_news_to_stack()` - Push to LIFO stack (position 1)
 - `get_news_stack()` - Get news stack (positions 1-5)
 - `check_duplicate_url()` - Check if URL exists
-
-## Scheduler Integration
-
-The data engine is integrated with the existing scheduler in `backend/app/scheduler/scheduler_manager.py`.
-
-**Job Configuration:**
-```python
-# Runs daily at midnight (00:00)
-scheduler.add_job(
-    _news_engine_daily_update,
-    trigger=CronTrigger(hour=0, minute=0),
-    id='news_engine_daily_update',
-    name='Data Engine Daily Update',
-    max_instances=1
-)
-```
-
-**What it does:**
-1. Fetches news for all user watchlists
-2. Includes top 10 popular companies
-3. Stores raw data in stock_news_raw
-4. Processes immediately
-5. Stores in stock_news table
-6. Logs statistics
+- `get_stats()` - Get storage statistics
 
 ## Testing
 

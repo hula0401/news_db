@@ -1,20 +1,10 @@
 """News processor for converting raw data to structured format."""
-import sys
-import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-# Add parent directories to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-try:
-    from backend.app.db.stock_news import StockNewsDB
-except ImportError:
-    print("⚠️  Could not import StockNewsDB, using mock")
-    StockNewsDB = None
-
-from ..models.raw_news import RawNewsItem, ProcessingStatus
-from ..storage.raw_news_storage import RawNewsStorage
+from models.raw_news import RawNewsItem, ProcessingStatus
+from storage.raw_news_storage import RawNewsStorage
+from db.stock_news import StockNewsDB
 
 
 class NewsProcessor:
