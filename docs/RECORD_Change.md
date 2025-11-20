@@ -97,3 +97,84 @@ Implemented PolygonNewsFetcher with full integration for fetching, storing, and 
 ```bash
 uv run python test_multi_source.py
 ```
+
+## 2025-11-18 16:45: Created today's news fetcher with configurable symbols
+Added dynamic test script that fetches only today's news with configurable symbol list.
+
+### Files Created:
+- `test_today_news.py` - Fetch today's news only (dynamic date)
+- `config.py` - Centralized configuration for symbols and fetch settings
+
+### Features:
+- **Dynamic date:** Always fetches from today (00:00:00 to current time)
+- **Configurable symbols:** Edit `config.py` to change which symbols to fetch
+- **Both sources:** Fetches from Finnhub and Polygon
+- **Auto-process:** Processes all pending items automatically
+- **Summary view:** Shows news stacks with source and publisher info
+
+### Configuration:
+Edit `config.py` to customize:
+- `DEFAULT_SYMBOLS` - List of symbols to fetch
+- `FETCH_CONFIG` - Fetch and processing settings
+- Predefined lists: `TOP_STOCKS`, `TECH_STOCKS`
+
+### Usage:
+```bash
+uv run python test_today_news.py
+```
+
+Runs daily to fetch latest news for configured symbols.
+
+## 2025-11-18 17:00: Implemented incremental fetching with timestamp tracking
+Created production-ready incremental fetching system to avoid re-fetching old news.
+
+### Files Created:
+- `schema_fetch_state.sql` - Tracks last fetch timestamp per symbol+source
+- `storage/fetch_state_manager.py` - Manages fetch state and incremental windows
+- `fetch_incremental.py` - Production incremental fetcher
+
+### How It Works:
+1. **First run:** Fetches last 7 days of news, stores timestamp
+2. **Subsequent runs:** Fetches only from (last_timestamp - 1min) to now
+3. **Buffer window:** 1-minute overlap prevents missing news
+4. **Duplicate check:** Still active as safety net
+
+### Key Features:
+- **Timestamp tracking:** Per symbol+source combination
+- **Automatic incremental:** No manual configuration needed
+- **Buffer window:** Configurable overlap (default 1 minute)
+- **Stale detection:** Find symbols that haven't been fetched recently
+- **Reset capability:** Force full refresh when needed
+
+### Database Schema:
+- `fetch_state` table: Tracks last_fetch_from, last_fetch_to
+- `v_fetch_state_status` view: Shows time since last fetch
+- Unique constraint on (symbol, fetch_source)
+
+### Production Benefits:
+- **Efficiency:** Only fetch new news, not entire history
+- **API savings:** Reduce API calls dramatically
+- **Speed:** Faster execution (fewer items to check)
+- **Scalability:** Can run frequently (every 5-15 minutes)
+
+### Usage:
+```bash
+# Run schema first (one time)
+cat schema_fetch_state.sql | supabase sql
+
+# Run incremental fetch
+uv run python fetch_incremental.py
+```
+
+### Performance:
+- First run: ~7 days of news
+- Subsequent runs: Only last few minutes/hours
+- Duplicate checking: Still active but processes fewer items
+
+## 2025-11-18 17:15: Changed first run to fetch last 24 hours instead of 7 days
+Modified default fetch window for first run from 7 days to 1 day (yesterday only).
+
+### Change:
+- `fetch_state_manager.py` line 49: Changed from `timedelta(days=7)` to `timedelta(days=1)`
+- First run now fetches last 24 hours instead of full week
+- Reduces initial fetch volume while still getting recent news
