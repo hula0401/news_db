@@ -1,6 +1,11 @@
 ## authorized edits:
 1. always ask when need to do rm -f for any files/folders.
 
+## Implementation Rules
+1. If a function or class is used by two or more parts of the logic, please abstract it into an independent component to avoid duplication.
+2. Follow the “Don’t Repeat Yourself” principle, but apply it with balance. Avoid splitting very small functions (e.g., with only one or two simple clauses), so the code stays easy for engineers to read and understand.
+
+
 ## Documentation: All saved in "docs/"
 ### README.md
 1. Only have one README.md under the root (repo).

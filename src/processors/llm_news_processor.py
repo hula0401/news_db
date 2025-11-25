@@ -2,11 +2,11 @@
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-from models.raw_news import RawNewsItem, ProcessingStatus
-from storage.raw_news_storage import RawNewsStorage
-from db.stock_news import StockNewsDB
-from services.llm_categorizer import NewsCategorizer
-from config import LLM_CONFIG
+from src.models.raw_news import RawNewsItem, ProcessingStatus
+from src.storage.raw_news_storage import RawNewsStorage
+from src.db.stock_news import StockNewsDB
+from src.services.llm_categorizer import NewsCategorizer
+from src.config import LLM_CONFIG
 
 
 class LLMNewsProcessor:
@@ -47,7 +47,7 @@ class LLMNewsProcessor:
             return None
 
         try:
-            if fetch_source == "finnhub":
+            if fetch_source and fetch_source.startswith("finnhub"):
                 title = raw_json.get("headline", "")
                 summary = raw_json.get("summary", "")
             elif fetch_source == "polygon":
@@ -89,7 +89,7 @@ class LLMNewsProcessor:
             url = raw_item.get("url", "")
 
             # Extract fields based on source
-            if fetch_source == "finnhub":
+            if fetch_source and fetch_source.startswith("finnhub"):
                 title = raw_json.get("headline", "")
                 summary = raw_json.get("summary", "")
                 source_name = raw_json.get("source", "")
@@ -188,6 +188,13 @@ class LLMNewsProcessor:
                 print(f"⏭️  Skipped NON_FINANCIAL: {processed_data['title'][:50]}...")
                 return True  # Mark as successful but don't store
 
+            # Handle ERROR category - store with error_log
+            if processed_data.get("category") == "ERROR":
+                error_log = categorization.get("api_error", "Unknown error")
+                # Store ERROR items so they can be manually reviewed
+                processed_data["metadata"]["error_log"] = error_log
+                print(f"⚠️  ERROR category: {processed_data['title'][:50]}... - {error_log[:50]}")
+
             # Store in stock_news table (no LIFO stack, just insert)
             result = await self.stock_news_db.insert_news(processed_data)
 
@@ -285,6 +292,113 @@ class LLMNewsProcessor:
         print(f"   Categorized: {stats['categorized']}")
         print(f"   Stored: {stats['processed']}")
         print(f"   NON_FINANCIAL skipped: {stats['non_financial_skipped']}")
+        print(f"   Failed: {stats['failed']}")
+
+        return stats
+
+    async def recategorize_uncategorized_batch(self, limit: int = 50) -> Dict[str, int]:
+        """
+        Re-process UNCATEGORIZED news items in stock_news table.
+
+        Args:
+            limit: Maximum number of items to re-process
+
+        Returns:
+            Statistics dict with counts
+        """
+        stats = {
+            "fetched": 0,
+            "recategorized": 0,
+            "updated": 0,
+            "non_financial_removed": 0,
+            "failed": 0
+        }
+
+        # Get UNCATEGORIZED items from stock_news
+        uncategorized = await self.stock_news_db.get_uncategorized(limit=limit)
+        stats["fetched"] = len(uncategorized)
+
+        if not uncategorized:
+            return stats
+
+        print(f"🔄 Re-processing {stats['fetched']} UNCATEGORIZED news items...")
+
+        # Extract titles and summaries for LLM
+        news_for_llm = []
+        for item in uncategorized:
+            title = item.get("title", "")
+            summary = item.get("summary", "")
+            if title:
+                news_for_llm.append({
+                    "title": title,
+                    "summary": summary or title,
+                    "stock_news_item": item
+                })
+
+        # Categorize with LLM in batch
+        if news_for_llm:
+            print(f"🤖 Sending {len(news_for_llm)} items to LLM for re-categorization...")
+
+            categorized = await self.categorizer.categorize_batch(
+                news_for_llm,
+                batch_size=LLM_CONFIG['batch_size']
+            )
+            stats["recategorized"] = len(categorized)
+
+            # Update each item with new category
+            for item_data in categorized:
+                stock_item = item_data.get("stock_news_item")
+                if not stock_item:
+                    continue
+
+                item_id = stock_item.get("id")
+                new_category = item_data.get("primary_category", "UNCATEGORIZED")
+                new_secondary = item_data.get("secondary_category", "")
+                api_error = item_data.get("api_error", None)
+
+                # If ERROR category, save error_log and don't retry again
+                if new_category == "ERROR":
+                    error_log = api_error or "Unknown error during re-categorization"
+                    success = await self.stock_news_db.update_category(
+                        item_id=item_id,
+                        category="ERROR",
+                        secondary_category="",
+                        error_log=error_log
+                    )
+                    if success:
+                        stats["failed"] += 1
+                        print(f"❌ ERROR (will not retry): {stock_item.get('title', '')[:40]}... - {error_log[:50]}")
+                    continue
+
+                # If still UNCATEGORIZED after retry, skip (will retry next time)
+                if new_category == "UNCATEGORIZED":
+                    stats["failed"] += 1
+                    print(f"⚠️  Still UNCATEGORIZED: {stock_item.get('title', '')[:50]}...")
+                    continue
+
+                # If NON_FINANCIAL, update category
+                if new_category == "NON_FINANCIAL":
+                    stats["non_financial_removed"] += 1
+                    print(f"🗑️  Marked as NON_FINANCIAL: {stock_item.get('title', '')[:50]}...")
+
+                # Update category (clear error_log if previously had error)
+                success = await self.stock_news_db.update_category(
+                    item_id=item_id,
+                    category=new_category,
+                    secondary_category=new_secondary,
+                    error_log=""  # Clear any previous error
+                )
+
+                if success:
+                    stats["updated"] += 1
+                    print(f"✅ Updated [{new_category}] {stock_item.get('title', '')[:45]}... ({new_secondary or 'general'})")
+                else:
+                    stats["failed"] += 1
+
+        print(f"✅ Re-categorization complete:")
+        print(f"   Re-categorized: {stats['recategorized']}")
+        print(f"   Updated: {stats['updated']}")
+        print(f"   NON_FINANCIAL marked: {stats['non_financial_removed']}")
         print(f"   Failed: {stats['failed']}")
 
         return stats

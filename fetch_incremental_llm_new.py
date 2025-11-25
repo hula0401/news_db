@@ -10,13 +10,13 @@ from supabase import create_client
 EST = timezone(timedelta(hours=-5))
 UTC = timezone.utc
 
-from fetchers.general_news_fetcher import GeneralNewsFetcher
-from storage.raw_news_storage import RawNewsStorage
-from storage.fetch_state_manager import FetchStateManager
-from processors.llm_news_processor import LLMNewsProcessor
-from services.llm_categorizer import NewsCategorizer
-from db.stock_news import StockNewsDB
-from config import LLM_CONFIG, FETCH_CONFIG
+from src.fetchers.general_news_fetcher import GeneralNewsFetcher
+from src.storage.raw_news_storage import RawNewsStorage
+from src.storage.fetch_state_manager import FetchStateManager
+from src.processors.llm_news_processor import LLMNewsProcessor
+from src.services.llm_categorizer import NewsCategorizer
+from src.db.stock_news import StockNewsDB
+from src.config import LLM_CONFIG, FETCH_CONFIG
 
 
 async def main():
@@ -65,10 +65,96 @@ async def main():
     )
 
     # ========================================
-    # STEP 1: Get Polygon fetch window
+    # STEP 1: Check for pending raw news and process them first
+    # Priority: 1 (Highest - process_pending_raw)
     # ========================================
     print("-" * 70)
-    print("STEP 1: Get Polygon Fetch Window")
+    print("STEP 1: Check for Pending Raw News (Priority 1)")
+    print("-" * 70)
+
+    pending_count = await raw_storage.count_pending()
+    print(f"📊 Pending raw news items: {pending_count}")
+    print()
+
+    if pending_count > 0:
+        print(f"⚙️  Processing {pending_count} pending items before fetching new news...")
+        print()
+
+        total_processed = 0
+        total_skipped = 0
+        total_failed = 0
+
+        while True:
+            batch_stats = await llm_processor.process_unprocessed_batch(
+                limit=LLM_CONFIG['processing_limit']
+            )
+
+            if batch_stats['fetched'] == 0:
+                print("✅ No more pending items")
+                break
+
+            total_processed += batch_stats['processed']
+            total_skipped += batch_stats['non_financial_skipped']
+            total_failed += batch_stats['failed']
+
+            if batch_stats['categorized'] == 0:
+                break
+
+        print()
+        print(f"📊 Pending Processing Summary:")
+        print(f"   Categorized & stored: {total_processed}")
+        print(f"   NON_FINANCIAL skipped: {total_skipped}")
+        print(f"   Failed: {total_failed}")
+        print()
+
+    # ========================================
+    # STEP 1.5: Re-process UNCATEGORIZED news in stock_news
+    # Priority: 2 (High - recategorize_uncategorized)
+    # ========================================
+    print("-" * 70)
+    print("STEP 1.5: Re-process UNCATEGORIZED News (Priority 2)")
+    print("-" * 70)
+
+    uncategorized_count = await stock_news_db.count_uncategorized()
+    print(f"🔄 UNCATEGORIZED news items: {uncategorized_count}")
+    print()
+
+    if uncategorized_count > 0:
+        print(f"🔄 Re-categorizing {uncategorized_count} UNCATEGORIZED items...")
+        print()
+
+        total_updated = 0
+        total_non_financial = 0
+        total_failed_recat = 0
+
+        while True:
+            recat_stats = await llm_processor.recategorize_uncategorized_batch(
+                limit=LLM_CONFIG['processing_limit']
+            )
+
+            if recat_stats['fetched'] == 0:
+                print("✅ No more UNCATEGORIZED items")
+                break
+
+            total_updated += recat_stats['updated']
+            total_non_financial += recat_stats['non_financial_removed']
+            total_failed_recat += recat_stats['failed']
+
+            if recat_stats['recategorized'] == 0:
+                break
+
+        print()
+        print(f"📊 Re-categorization Summary:")
+        print(f"   Updated: {total_updated}")
+        print(f"   NON_FINANCIAL marked: {total_non_financial}")
+        print(f"   Failed: {total_failed_recat}")
+        print()
+
+    # ========================================
+    # STEP 2: Get Polygon fetch window
+    # ========================================
+    print("-" * 70)
+    print("STEP 2: Get Polygon Fetch Window")
     print("-" * 70)
 
     polygon_from, polygon_to = await fetch_state.get_last_fetch_time(
@@ -86,10 +172,11 @@ async def main():
     print()
 
     # ========================================
-    # STEP 2: Fetch incremental news
+    # STEP 3: Fetch incremental news
+    # Priority: 3 (Normal - fetch_and_process)
     # ========================================
     print("-" * 70)
-    print("STEP 2: Fetch Incremental News")
+    print("STEP 3: Fetch Incremental News (Priority 3)")
     print("-" * 70)
 
     all_items = []
@@ -143,10 +230,10 @@ async def main():
     print()
 
     # ========================================
-    # STEP 3: Store in raw storage
+    # STEP 4: Store in raw storage
     # ========================================
     print("-" * 70)
-    print("STEP 3: Store in stock_news_raw")
+    print("STEP 4: Store in stock_news_raw")
     print("-" * 70)
 
     if all_items:
@@ -166,10 +253,10 @@ async def main():
     print()
 
     # ========================================
-    # STEP 4: Update fetch state
+    # STEP 5: Update fetch state
     # ========================================
     print("-" * 70)
-    print("STEP 4: Update Fetch State")
+    print("STEP 5: Update Fetch State")
     print("-" * 70)
 
     # Update fetch state for each Finnhub category
@@ -222,10 +309,10 @@ async def main():
     print()
 
     # ========================================
-    # STEP 5: Process with LLM categorization
+    # STEP 6: Process with LLM categorization
     # ========================================
     print("-" * 70)
-    print("STEP 5: LLM Categorization & Processing")
+    print("STEP 6: LLM Categorization & Processing")
     print("-" * 70)
 
     if storage_stats['inserted'] > 0:
@@ -262,10 +349,10 @@ async def main():
     print()
 
     # ========================================
-    # STEP 6: Show sample categorized news
+    # STEP 7: Show sample categorized news
     # ========================================
     print("-" * 70)
-    print("STEP 6: Recent Categorized News")
+    print("STEP 7: Recent Categorized News")
     print("-" * 70)
 
     if total_processed > 0:
@@ -296,10 +383,10 @@ async def main():
     print()
 
     # ========================================
-    # STEP 7: Final statistics
+    # STEP 8: Final statistics
     # ========================================
     print("-" * 70)
-    print("STEP 7: Summary")
+    print("STEP 8: Summary")
     print("-" * 70)
 
     raw_stats = await raw_storage.get_stats()

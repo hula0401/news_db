@@ -344,3 +344,279 @@ Fixed timestamp tracking to use actual latest news published_at instead of curre
 - Incremental fetching based on actual news publish time
 - Works correctly across different timezones
 - Next run fetches only news published after latest fetched article
+
+## 2025-11-24 23:00: Fixed processor source matching bug and added pending news processing
+Fixed fetch_source matching for finnhub_{category} naming and added pending news processing before new fetches.
+
+### Bug Fix in `src/processors/llm_news_processor.py`:
+**Issue:** Changed source naming from `"finnhub"` to `"finnhub_general"`, `"finnhub_merger"` but processor still checked exact match `fetch_source == "finnhub"`, causing 0 items to be categorized.
+
+**Fix:**
+- Changed `if fetch_source == "finnhub":` to `if fetch_source and fetch_source.startswith("finnhub"):`
+- Applied to both `_extract_content()` and `_build_processed_data()` methods
+- Now handles all Finnhub category sources correctly
+
+### New Feature - Process Pending Before Fetching:
+**`src/storage/raw_news_storage.py`:**
+- Added `count_pending()` method to quickly check pending items count
+
+**`fetch_incremental_llm.py`:**
+- Added STEP 1: Check for pending raw news and process them first
+- If pending items exist, process all before fetching new news
+- Prevents accumulation of unprocessed raw news
+- Shows summary of pending processing results
+
+**Workflow:**
+1. Check pending count
+2. If pending > 0: Process all pending items with LLM
+3. Then proceed with normal incremental fetch flow
+
+### Result:
+- LLM categorization now works correctly with category-specific sources
+- Pending news processed automatically before new fetches
+- No accumulation of unprocessed raw news
+
+## 2025-11-24 23:30: Added LLM concurrency control and centralized model configuration
+Implemented concurrency limiting and retry logic to prevent 429 rate limit errors, moved model config to config.py.
+
+### Issue:
+GLM-4-flash free tier has 2 concurrent request limit, causing 429 errors:
+```
+❌ Zhipu API error: 429
+Response: {"error":{"code":"1302","message":"您当前使用该API的并发数过高，请降低并发，或联系客服增加限额。"}}
+```
+
+### Changes in `src/config.py`:
+**Added `LLM_MODELS` configuration:**
+- `categorization`: Model settings for news categorization
+  - `model`: "glm-4-flash" (changeable to other models)
+  - `concurrency_limit`: 1 (limits concurrent API calls)
+  - `delay_between_batches`: 2.0s (delay between batches)
+  - `max_retries`: 2 (retry failed requests)
+  - `timeout`: 60.0s
+- `summarization`: Model settings for daily summaries
+  - Same structure, longer timeout (120s)
+- Reduced `batch_size` from 10 to 5 to avoid overwhelming API
+
+### Changes in `src/services/llm_categorizer.py`:
+**Added concurrency control:**
+- Created `asyncio.Semaphore` to limit concurrent API calls
+- New `_call_llm_api()` method with:
+  - Semaphore-based concurrency control
+  - Automatic retry with exponential backoff (5s, 10s, 15s)
+  - Handles 429 rate limit errors gracefully
+  - Returns None if failed after max_retries
+- Updated `categorize_batch()`:
+  - Uses new `_call_llm_api()` method
+  - Adds delay between batches (`delay_between_batches`)
+  - Falls back to UNCATEGORIZED if API fails
+- Reads all settings from `LLM_MODELS['categorization']`
+
+### Changes in `src/services/daily_summarizer.py`:
+**Updated to use model config:**
+- Reads model, temperature, timeout from `LLM_MODELS['summarization']`
+- `generate_daily_summary()` uses config temperature by default
+- Ready for future model changes
+
+### Benefits:
+- **No more 429 errors**: Concurrency limited to safe level
+- **Automatic retry**: Transient failures handled automatically
+- **Easy model switching**: Change model in one place (config.py)
+- **Better rate limiting**: 2s delay between batches + concurrency control
+- **Flexible configuration**: Different settings for categorization vs summarization
+
+### Usage:
+To change models in the future, just edit `src/config.py`:
+```python
+LLM_MODELS = {
+    "categorization": {
+        "model": "glm-4-plus",  # Change model here
+        ...
+    }
+}
+```
+
+## 2025-11-25 00:00: Added UNCATEGORIZED re-processing and ACTION_PRIORITY system
+Implemented re-categorization of UNCATEGORIZED news and priority-based processing order for future distributed systems.
+
+### New Features:
+
+**1. UNCATEGORIZED Re-processing (`src/db/stock_news.py`):**
+- Added `count_uncategorized()` - Count UNCATEGORIZED items in stock_news
+- Added `get_uncategorized()` - Fetch UNCATEGORIZED items for re-processing
+- Added `update_category()` - Update category and secondary_category
+
+**2. Re-categorization Method (`src/processors/llm_news_processor.py`):**
+- New `recategorize_uncategorized_batch()` method:
+  - Fetches UNCATEGORIZED news from stock_news table
+  - Sends to LLM for re-categorization
+  - Updates categories in place (no deletion)
+  - Marks NON_FINANCIAL items but keeps them in database
+  - Shows detailed progress logging
+
+**3. ACTION_PRIORITY System (`src/config.py`):**
+Added priority configuration for distributed processing:
+```python
+ACTION_PRIORITY = {
+    "process_pending_raw": 1,          # Highest priority
+    "recategorize_uncategorized": 2,   # High priority
+    "fetch_and_process": 3,            # Normal priority
+    "generate_summary": 4,             # Lower priority
+}
+```
+
+**4. Updated Fetch Script (`fetch_incremental_llm_new.py`):**
+- **STEP 1** (Priority 1): Process pending items in stock_news_raw
+- **STEP 1.5** (Priority 2): Re-categorize UNCATEGORIZED in stock_news
+- **STEP 2-3** (Priority 3): Regular fetch and process
+- Steps numbered 1, 1.5, 2, 3, 4, 5, 6, 7, 8
+
+### Processing Order:
+1. **Pending raw news** (stock_news_raw with status='pending')
+2. **UNCATEGORIZED news** (stock_news with category='UNCATEGORIZED')
+3. **New news fetching** (incremental fetch from APIs)
+4. **Daily summary** (separate script, priority 4)
+
+### Benefits:
+- **No data loss**: Failed categorizations get retried automatically
+- **Clean database**: UNCATEGORIZED items eventually get proper categories
+- **Priority-based**: Critical tasks (pending, uncategorized) processed first
+- **Future-ready**: ACTION_PRIORITY enables distributed task scheduling
+- **Flexible**: Can adjust priority order in config.py
+
+### Example Usage:
+When running `fetch_incremental_llm_new.py`:
+1. First clears any pending items from stock_news_raw
+2. Then re-processes any UNCATEGORIZED items in stock_news
+3. Finally fetches and processes new news
+
+This ensures clean data and no accumulation of unprocessed/uncategorized items.
+
+## 2025-11-25 00:30: Added ERROR category and error_log to prevent infinite retry loops
+Implemented error handling for permanent API failures to avoid infinite retry loops on broken items.
+
+### Problem:
+When LLM API returns permanent errors (400, invalid input, etc.), items stay UNCATEGORIZED and get retried infinitely, wasting API calls and processing time.
+
+### Solution:
+
+**1. Database Migration (`migrations/alter_add_error_log_to_stock_news.sql`):**
+- Added `error_log` column to stock_news table
+- Stores error details (API error code, message, exception info)
+- Added index for ERROR category items
+
+**2. ERROR Category Handling:**
+- New category: `ERROR` - For items with permanent API failures
+- Items marked as ERROR will NOT be retried to prevent infinite loops
+- Error details stored in `error_log` column for manual review
+
+**3. Updated LLM Categorizer (`src/services/llm_categorizer.py`):**
+- `_call_llm_api()` now returns tuple: `(content, error_msg)`
+- Returns error details on permanent failures (400, 500, exceptions)
+- `categorize_batch()` marks failed items as ERROR with `api_error` field
+- Error types captured:
+  - API errors (400, 500, etc.): "API Error {code}: {response}"
+  - JSON parse errors: "JSON parse error: {details}"
+  - Exceptions: "Batch processing exception: {exception}"
+
+**4. Updated Processor (`src/processors/llm_news_processor.py`):**
+- `process_raw_item()`: Stores ERROR items with error_log in metadata
+- `recategorize_uncategorized_batch()`:
+  - Marks ERROR items and saves to error_log
+  - ERROR items excluded from future re-processing
+  - Clears error_log when successfully re-categorized
+
+**5. Updated StockNewsDB (`src/db/stock_news.py`):**
+- `update_category()` now accepts optional `error_log` parameter
+- `get_uncategorized()` excludes ERROR items (only gets UNCATEGORIZED)
+
+### Error Flow:
+1. **Initial categorization**: API fails → mark as ERROR, save error_log
+2. **Re-categorization check**: ERROR items skipped (not fetched by `get_uncategorized()`)
+3. **Manual review**: Users can query `category='ERROR'` to review failed items
+
+### Benefits:
+- **No infinite loops**: ERROR items marked and skipped
+- **API efficiency**: Don't waste calls on permanently broken items
+- **Debuggability**: Error details saved for manual review
+- **Clean separation**:
+  - UNCATEGORIZED = Temporary failure, will retry
+  - ERROR = Permanent failure, won't retry
+
+### Example Error Messages:
+```sql
+-- API Error example
+error_log: "API Error 400: {\"error\":{\"code\":\"invalid_input\",\"message\":\"...\"}}"
+
+-- JSON Parse Error example
+error_log: "JSON parse error: Expecting ',' delimiter: line 5 column 10 (char 145)"
+
+-- Exception example
+error_log: "Exception after 2 retries: Connection timeout"
+```
+
+### Usage:
+```sql
+-- Find all ERROR items for manual review
+SELECT title, error_log, created_at
+FROM stock_news
+WHERE category = 'ERROR'
+ORDER BY created_at DESC;
+
+-- Count ERROR vs UNCATEGORIZED
+SELECT category, COUNT(*)
+FROM stock_news
+WHERE category IN ('ERROR', 'UNCATEGORIZED')
+GROUP BY category;
+```
+
+## 2025-11-25 00:45: Updated daily summary to exclude UNCATEGORIZED and ERROR categories
+Enhanced daily summary filtering to exclude all invalid/unwanted categories from summaries.
+
+### Changes:
+
+**1. Added EXCLUDED_CATEGORIES to config (`src/config.py`):**
+```python
+EXCLUDED_CATEGORIES = [
+    "MACRO_NOBODY",      # Geopolitical commentary without specific leaders
+    "UNCATEGORIZED",     # Failed categorization (will retry)
+    "ERROR",             # Permanent errors (won't retry)
+    "NON_FINANCIAL",     # Non-market news
+]
+```
+
+**2. Updated Daily Summary (`generate_daily_summary.py`):**
+- Imports `EXCLUDED_CATEGORIES` from config
+- Uses `.not_.in_("category", EXCLUDED_CATEGORIES)` filter
+- Excludes 4 categories: MACRO_NOBODY, UNCATEGORIZED, ERROR, NON_FINANCIAL
+- Shows excluded categories in log output
+
+**3. Updated Documentation (`README.md`):**
+- Added EXCLUDED_CATEGORIES to configuration section
+- Updated daily summary description
+
+### Previous vs New:
+
+**Before:**
+- Only excluded `MACRO_NOBODY`
+- Hardcoded exclusion in query
+
+**After:**
+- Excludes 4 categories: MACRO_NOBODY, UNCATEGORIZED, ERROR, NON_FINANCIAL
+- Centralized in config (easy to modify)
+- Consistent across all summary generation
+
+### Benefits:
+- **Clean summaries**: Only properly categorized, relevant news included
+- **Centralized config**: Easy to add/remove excluded categories
+- **Consistent filtering**: Same exclusion list used everywhere
+- **Better quality**: No uncategorized or error items in summaries
+
+### Example Query:
+```python
+# Daily summary now fetches:
+.not_.in_("category", ["MACRO_NOBODY", "UNCATEGORIZED", "ERROR", "NON_FINANCIAL"])
+
+# Only includes valid financial news categories:
+# MACRO_ECONOMIC, CENTRAL_BANK_POLICY, GEOPOLITICAL_SPECIFIC, etc.
+```

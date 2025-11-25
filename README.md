@@ -143,8 +143,8 @@ uv run python generate_daily_summary.py
 
 This will:
 - Fetch news from 6PM EST (previous day) to specified time
-- Exclude `MACRO_NOBODY` category
-- Generate structured summary using GLM-4.5-flash
+- Exclude unwanted categories: `MACRO_NOBODY`, `UNCATEGORIZED`, `ERROR`, `NON_FINANCIAL`
+- Generate structured summary using GLM-4-flash
 - Store in `daily_highlights` table
 
 **Configuration (edit in script):**
@@ -161,14 +161,31 @@ SUMMARY_TIME = "17:00:00"    # None = now, or "HH:MM:SS" (EST)
 
 ## Configuration
 
-All system parameters are centralized in `config.py`. Edit this file to adjust behavior:
+All system parameters are centralized in `src/config.py`. Edit this file to adjust behavior:
 
 ```python
+# LLM Model Configuration
+LLM_MODELS = {
+    "categorization": {
+        "model": "glm-4-flash",           # Zhipu AI model
+        "temperature": 0.3,               # Lower = more consistent
+        "timeout": 60.0,                  # Request timeout (seconds)
+        "max_retries": 2,                 # Retry on failure
+        "concurrency_limit": 1,           # Max concurrent API calls
+        "delay_between_batches": 2.0,     # Delay between batches (seconds)
+    },
+    "summarization": {
+        "model": "glm-4-flash",           # Model for daily summaries
+        "temperature": 0.3,
+        "timeout": 120.0,
+        "max_retries": 2,
+    }
+}
+
 # LLM Processing Configuration
 LLM_CONFIG = {
-    "batch_size": 10,              # Items per LLM API call (1-50)
-    "processing_limit": 20,        # Max items to process per run (1-500)
-    "temperature": 0.3,            # LLM consistency (0.0-1.0)
+    "batch_size": 5,               # Items per LLM API call (reduced for rate limits)
+    "processing_limit": 20,        # Max items to process per run
 }
 
 # News Fetching Configuration
@@ -177,7 +194,22 @@ FETCH_CONFIG = {
     "polygon_limit": 200,          # Max articles from Polygon (10-1000)
     "buffer_minutes": 1,           # Overlap window (0-10)
 }
+
+# Categories excluded from daily summaries
+EXCLUDED_CATEGORIES = [
+    "MACRO_NOBODY",      # Geopolitical commentary without specific leaders
+    "UNCATEGORIZED",     # Failed categorization (will retry)
+    "ERROR",             # Permanent errors (won't retry)
+    "NON_FINANCIAL",     # Non-market news
+]
 ```
+
+**Key Settings:**
+- `concurrency_limit`: Prevents 429 rate limit errors (GLM-4-flash free tier: 2 concurrent requests)
+- `delay_between_batches`: Adds delay between batches to avoid hitting rate limits
+- `max_retries`: Automatically retries failed API calls with exponential backoff
+- `batch_size`: Reduced from 10 to 5 to avoid overwhelming the API
+- `EXCLUDED_CATEGORIES`: Categories excluded from daily summaries (configurable)
 
 **📖 See [Configuration Guide](docs/CONFIGURATION_GUIDE.md) for:**
 - Detailed parameter explanations
@@ -240,45 +272,53 @@ news_db/
 ├── test_fetch_llm_for_new_databse.py  # Initial database setup
 ├── generate_daily_summary.py          # Generate daily highlights
 │
-├── fetchers/
-│   └── general_news_fetcher.py        # Finnhub + Polygon API
-│
-├── processors/
-│   └── llm_news_processor.py          # LLM categorization pipeline
-│
-├── services/
-│   ├── llm_categorizer.py             # Zhipu AI categorization
-│   └── daily_summarizer.py            # Zhipu AI daily summaries
-│
-├── db/
-│   ├── stock_news.py                  # stock_news operations
-│   └── daily_highlights.py            # daily_highlights operations
-│
-├── storage/
-│   ├── raw_news_storage.py            # Raw data staging
-│   └── fetch_state_manager.py         # Timestamp tracking
-│
-├── models/
-│   └── raw_news.py                    # Data models
+├── src/                               # Production code (for FastAPI)
+│   ├── __init__.py
+│   ├── config.py                      # Central configuration
+│   │
+│   ├── fetchers/
+│   │   └── general_news_fetcher.py    # Finnhub + Polygon API
+│   │
+│   ├── processors/
+│   │   └── llm_news_processor.py      # LLM categorization pipeline
+│   │
+│   ├── services/
+│   │   ├── llm_categorizer.py         # Zhipu AI categorization
+│   │   └── daily_summarizer.py        # Zhipu AI daily summaries
+│   │
+│   ├── db/
+│   │   ├── stock_news.py              # stock_news operations
+│   │   └── daily_highlights.py        # daily_highlights operations
+│   │
+│   ├── storage/
+│   │   ├── raw_news_storage.py        # Raw data staging
+│   │   └── fetch_state_manager.py     # Timestamp tracking
+│   │
+│   └── models/
+│       └── raw_news.py                # Data models
 │
 ├── migrations/
 │   ├── create_daily_highlights_table.sql  # Daily highlights schema
 │   └── alter_add_finnhub_max_id.sql       # Add finnhub_max_id column
 │
-├── docs/
-│   ├── DAILY_SUMMARY_GUIDE.md         # Daily summary documentation
-│   └── CONFIGURATION_GUIDE.md         # Configuration reference
-│
-└── config.py                          # Central configuration
+└── docs/
+    ├── DAILY_SUMMARY_GUIDE.md         # Daily summary documentation
+    └── CONFIGURATION_GUIDE.md         # Configuration reference
 ```
+
+**Note:** All production code is in the `src/` folder for easy FastAPI integration.
 
 ## API Rate Limits
 
 - **Finnhub**: ~100 articles per request, uses `minId` for incremental fetching
 - **Polygon**: 5 requests/min (free tier), date filtering supported
 - **Zhipu AI**:
-  - GLM-4-flash: Categorization (10 items per batch)
-  - GLM-4.5-flash: Daily summaries (handles large context)
+  - GLM-4-flash: Free tier has 2 concurrent request limit
+  - Concurrency control: System uses semaphore to limit to 1 concurrent request
+  - Automatic retry: 429 errors trigger exponential backoff (5s, 10s, 15s)
+  - Batch delay: 2s delay between batches to avoid rate limits
+  - Categorization: 5 items per batch
+  - Daily summaries: Handles large context with longer timeout (120s)
 
 ## Monitoring
 
@@ -369,6 +409,11 @@ ORDER BY summary_date DESC;
 - `daliysummary.txt` - Daily summary requirements
 
 ## Recent Changes
+
+**2025-11-24:**
+- ✅ Reorganized codebase - moved all production code to `src/` folder
+- ✅ Updated all imports to use `src.` prefix for FastAPI integration
+- ✅ Centralized configuration in `src/config.py`
 
 **2025-11-23:**
 - ✅ Added daily summary feature with GLM-4.5-flash

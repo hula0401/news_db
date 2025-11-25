@@ -84,6 +84,107 @@ class StockNewsDB:
             print(f"❌ Error inserting news: {e}")
             return None
 
+    async def count_uncategorized(self) -> int:
+        """
+        Count UNCATEGORIZED news items.
+
+        Returns:
+            Number of UNCATEGORIZED items
+        """
+        try:
+            def _count():
+                return (
+                    self.client
+                    .table(self.table_name)
+                    .select("id", count="exact")
+                    .eq("category", "UNCATEGORIZED")
+                    .execute()
+                )
+
+            result = await asyncio.to_thread(_count)
+            return result.count or 0
+
+        except Exception as e:
+            print(f"❌ Error counting uncategorized news: {e}")
+            return 0
+
+    async def get_uncategorized(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get UNCATEGORIZED news items for re-processing.
+
+        Note: Excludes items with category='ERROR' to prevent infinite retry loops.
+
+        Args:
+            limit: Maximum number of items to fetch
+
+        Returns:
+            List of UNCATEGORIZED news items (excluding ERROR items)
+        """
+        try:
+            def _fetch():
+                return (
+                    self.client
+                    .table(self.table_name)
+                    .select("*")
+                    .eq("category", "UNCATEGORIZED")
+                    .order("created_at", desc=False)  # Process oldest first
+                    .limit(limit)
+                    .execute()
+                )
+
+            result = await asyncio.to_thread(_fetch)
+            return result.data or []
+
+        except Exception as e:
+            print(f"❌ Error getting uncategorized news: {e}")
+            return []
+
+    async def update_category(
+        self,
+        item_id: str,
+        category: str,
+        secondary_category: str = "",
+        error_log: Optional[str] = None
+    ) -> bool:
+        """
+        Update category and secondary_category for a news item.
+
+        Args:
+            item_id: News item ID
+            category: New primary category
+            secondary_category: New secondary category (stock symbols)
+            error_log: Error message if categorization failed
+
+        Returns:
+            True if update successful
+        """
+        try:
+            update_data = {
+                "category": category,
+                "secondary_category": secondary_category,
+                "updated_at": datetime.now().isoformat()
+            }
+
+            # Add error_log if provided
+            if error_log is not None:
+                update_data["error_log"] = error_log
+
+            def _update():
+                return (
+                    self.client
+                    .table(self.table_name)
+                    .update(update_data)
+                    .eq("id", item_id)
+                    .execute()
+                )
+
+            result = await asyncio.to_thread(_update)
+            return result.data is not None
+
+        except Exception as e:
+            print(f"❌ Error updating category: {e}")
+            return False
+
     async def get_stats(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """
         Get statistics for stock news.

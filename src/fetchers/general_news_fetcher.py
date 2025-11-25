@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import httpx
 
-from models.raw_news import RawNewsItem
+from src.models.raw_news import RawNewsItem
 
 
 class GeneralNewsFetcher:

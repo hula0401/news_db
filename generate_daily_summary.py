@@ -6,8 +6,9 @@ from datetime import datetime, date, time, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
-from services.daily_summarizer import DailySummarizer
-from db.daily_highlights import DailyHighlightDB
+from src.services.daily_summarizer import DailySummarizer
+from src.db.daily_highlights import DailyHighlightDB
+from src.config import EXCLUDED_CATEGORIES
 
 # EST timezone (UTC-5) - for user input/display only
 EST = timezone(timedelta(hours=-5))
@@ -16,8 +17,8 @@ UTC = timezone.utc
 # ============================================
 # CONFIGURATION: Change these as needed
 # ============================================
-SUMMARY_DATE = "2025-11-23"  # None = today, or specify date like "2025-11-23"
-SUMMARY_TIME = "07:00:00"  # None = now, or specify time like "17:00:00"
+SUMMARY_DATE = "2025-11-27"  # None = today, or specify date like "2025-11-23"
+SUMMARY_TIME = "18:00:00"  # None = now, or specify time like "17:00:00"
 
 
 async def main():
@@ -92,7 +93,7 @@ async def main():
                 .select("id, title, summary, category, secondary_category, source, published_at")
                 .gte("published_at", from_time.isoformat())
                 .lte("published_at", to_time.isoformat())
-                .neq("category", "MACRO_NOBODY")  # Exclude MACRO_NOBODY
+                .not_.in_("category", EXCLUDED_CATEGORIES)  # Exclude invalid/unwanted categories from config
                 .order("published_at", desc=False)
                 .execute()
             )
@@ -100,7 +101,8 @@ async def main():
         result = await asyncio.to_thread(_fetch_news)
         news_items = result.data or []
 
-        print(f"📰 Fetched {len(news_items)} news articles (excluding MACRO_NOBODY)")
+        excluded_str = ", ".join(EXCLUDED_CATEGORIES)
+        print(f"📰 Fetched {len(news_items)} news articles (excluding {excluded_str})")
 
         # Count by category
         category_counts = {}

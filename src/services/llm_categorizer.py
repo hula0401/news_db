@@ -4,11 +4,11 @@ import httpx
 import json
 import asyncio
 
-from config import LLM_CONFIG
+from src.config import LLM_CONFIG, LLM_MODELS
 
 
 class NewsCategorizer:
-    """Categorizes news using Zhipu AI GLM-4.5-flash model."""
+    """Categorizes news using Zhipu AI model with concurrency control."""
 
     def __init__(self, api_key: str):
         """
@@ -19,8 +19,20 @@ class NewsCategorizer:
         """
         self.api_key = api_key
         self.base_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        self.model = "glm-4.5-flash"
-        self.client = httpx.AsyncClient(timeout=60.0)
+
+        # Use model config from LLM_MODELS
+        self.model_config = LLM_MODELS['categorization']
+        self.model = self.model_config['model']
+        self.temperature = self.model_config['temperature']
+        self.timeout = self.model_config['timeout']
+        self.max_retries = self.model_config['max_retries']
+        self.delay_between_batches = self.model_config['delay_between_batches']
+
+        # Concurrency control: limit concurrent API calls
+        self.concurrency_limit = self.model_config['concurrency_limit']
+        self.semaphore = asyncio.Semaphore(self.concurrency_limit)
+
+        self.client = httpx.AsyncClient(timeout=self.timeout)
 
     def _build_categorization_prompt(self, news_items: List[Dict[str, Any]]) -> str:
         """
@@ -85,13 +97,76 @@ Output only the JSON array, no additional text."""
 
         return prompt
 
+    async def _call_llm_api(self, prompt: str, retry_count: int = 0) -> tuple[Optional[str], Optional[str]]:
+        """
+        Call LLM API with retry logic and concurrency control.
+
+        Args:
+            prompt: Prompt to send to LLM
+            retry_count: Current retry attempt
+
+        Returns:
+            Tuple of (content, error_message):
+            - content: LLM response content or None if failed
+            - error_message: Error details if failed, None if successful
+        """
+        async with self.semaphore:  # Limit concurrent API calls
+            try:
+                response = await self.client.post(
+                    self.base_url,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        "temperature": self.temperature,
+                    }
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    return (content, None)
+
+                elif response.status_code == 429 and retry_count < self.max_retries:
+                    # Rate limit exceeded, wait and retry
+                    wait_time = (retry_count + 1) * 5  # Exponential backoff: 5s, 10s, 15s
+                    print(f"⚠️  Rate limit hit (429), retrying in {wait_time}s... (attempt {retry_count + 1}/{self.max_retries})")
+                    await asyncio.sleep(wait_time)
+                    return await self._call_llm_api(prompt, retry_count + 1)
+
+                else:
+                    # Permanent error - return error details
+                    error_msg = f"API Error {response.status_code}: {response.text[:200]}"
+                    print(f"❌ Zhipu API error: {response.status_code}")
+                    print(f"Response: {response.text}")
+                    return (None, error_msg)
+
+            except Exception as e:
+                if retry_count < self.max_retries:
+                    wait_time = (retry_count + 1) * 3
+                    print(f"⚠️  API call failed: {e}, retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    return await self._call_llm_api(prompt, retry_count + 1)
+                else:
+                    error_msg = f"Exception after {self.max_retries} retries: {str(e)}"
+                    print(f"❌ Error calling LLM API after {self.max_retries} retries: {e}")
+                    return (None, error_msg)
+
     async def categorize_batch(
         self,
         news_items: List[Dict[str, Any]],
         batch_size: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Categorize a batch of news items.
+        Categorize a batch of news items with concurrency control.
 
         Args:
             news_items: List of news dicts with 'title' and 'summary'
@@ -114,29 +189,10 @@ Output only the JSON array, no additional text."""
             try:
                 prompt = self._build_categorization_prompt(batch)
 
-                # Call Zhipu AI API
-                response = await self.client.post(
-                    self.base_url,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt
-                            }
-                        ],
-                        "temperature": LLM_CONFIG['temperature'],
-                    }
-                )
+                # Call LLM API with retry and concurrency control
+                content, error_msg = await self._call_llm_api(prompt)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
+                if content:
                     # Parse JSON response
                     try:
                         # Extract JSON from markdown code blocks if present
@@ -153,7 +209,8 @@ Output only the JSON array, no additional text."""
                                 batch[j]['categorization'] = result
                                 all_results.append({
                                     **batch[j],
-                                    **result
+                                    **result,
+                                    'api_error': None  # No error
                                 })
 
                         print(f"✅ Categorized {len(results)} items")
@@ -161,39 +218,42 @@ Output only the JSON array, no additional text."""
                     except json.JSONDecodeError as e:
                         print(f"⚠️  Failed to parse LLM response: {e}")
                         print(f"Response: {content[:200]}")
-                        # Add items without categorization
+                        # Add items with parsing error
+                        parse_error = f"JSON parse error: {str(e)}"
                         for item in batch:
                             all_results.append({
                                 **item,
-                                'primary_category': 'UNCATEGORIZED',
+                                'primary_category': 'ERROR',
                                 'secondary_category': '',
-                                'confidence': 0.0
+                                'confidence': 0.0,
+                                'api_error': parse_error
                             })
 
                 else:
-                    print(f"❌ Zhipu API error: {response.status_code}")
-                    print(f"Response: {response.text}")
-                    # Add items without categorization
+                    # API call failed after retries - mark as ERROR with details
                     for item in batch:
                         all_results.append({
                             **item,
-                            'primary_category': 'UNCATEGORIZED',
+                            'primary_category': 'ERROR',
                             'secondary_category': '',
-                            'confidence': 0.0
+                            'confidence': 0.0,
+                            'api_error': error_msg  # Include error details
                         })
 
-                # Rate limiting
-                await asyncio.sleep(1)
+                # Delay between batches to avoid rate limiting
+                await asyncio.sleep(self.delay_between_batches)
 
             except Exception as e:
                 print(f"❌ Error categorizing batch: {e}")
-                # Add items without categorization
+                # Add items with exception error
+                exception_error = f"Batch processing exception: {str(e)}"
                 for item in batch:
                     all_results.append({
                         **item,
-                        'primary_category': 'UNCATEGORIZED',
+                        'primary_category': 'ERROR',
                         'secondary_category': '',
-                        'confidence': 0.0
+                        'confidence': 0.0,
+                        'api_error': exception_error
                     })
 
         return all_results

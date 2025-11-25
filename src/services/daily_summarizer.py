@@ -1,12 +1,14 @@
-"""Daily news summarizer using Zhipu AI GLM-4.5-flash."""
+"""Daily news summarizer using Zhipu AI."""
 from typing import List, Dict, Any, Optional
 import httpx
 import json
 import asyncio
 
+from src.config import LLM_MODELS
+
 
 class DailySummarizer:
-    """Generates daily news highlights using Zhipu AI GLM-4.5-flash model."""
+    """Generates daily news highlights using Zhipu AI model."""
 
     def __init__(self, api_key: str):
         """
@@ -17,8 +19,15 @@ class DailySummarizer:
         """
         self.api_key = api_key
         self.base_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        self.model = "glm-4.5-flash"
-        self.client = httpx.AsyncClient(timeout=120.0)
+
+        # Use model config from LLM_MODELS
+        self.model_config = LLM_MODELS['summarization']
+        self.model = self.model_config['model']
+        self.temperature = self.model_config['temperature']
+        self.timeout = self.model_config['timeout']
+        self.max_retries = self.model_config['max_retries']
+
+        self.client = httpx.AsyncClient(timeout=self.timeout)
 
     def _build_summary_prompt(self, news_items: List[Dict[str, Any]]) -> str:
         """
@@ -94,20 +103,24 @@ Generate the daily highlights below:
     async def generate_daily_summary(
         self,
         news_items: List[Dict[str, Any]],
-        temperature: float = 0.3
+        temperature: Optional[float] = None
     ) -> Optional[str]:
         """
         Generate daily summary from news items.
 
         Args:
             news_items: List of news dictionaries with title, summary, category
-            temperature: LLM temperature (lower = more consistent)
+            temperature: LLM temperature (lower = more consistent), defaults to config value
 
         Returns:
             Generated summary text or None if failed
         """
         if not news_items:
             return "No significant news for this period."
+
+        # Use config temperature if not provided
+        if temperature is None:
+            temperature = self.temperature
 
         try:
             prompt = self._build_summary_prompt(news_items)

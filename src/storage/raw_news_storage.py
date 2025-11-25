@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from supabase import Client
 import asyncio
 
-from models.raw_news import RawNewsItem, ProcessingStatus
+from src.models.raw_news import RawNewsItem, ProcessingStatus
 
 
 class RawNewsStorage:
@@ -106,6 +106,30 @@ class RawNewsStorage:
         except Exception as e:
             print(f"❌ Error checking duplicate: {e}")
             return False
+
+    async def count_pending(self) -> int:
+        """
+        Count pending raw news items.
+
+        Returns:
+            Number of pending items
+        """
+        try:
+            def _count():
+                return (
+                    self.client
+                    .table(self.table_name)
+                    .select("id", count="exact")
+                    .eq("processing_status", ProcessingStatus.PENDING.value)
+                    .execute()
+                )
+
+            result = await asyncio.to_thread(_count)
+            return result.count or 0
+
+        except Exception as e:
+            print(f"❌ Error counting pending news: {e}")
+            return 0
 
     async def get_unprocessed(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
