@@ -47,26 +47,29 @@ class NewsCategorizer:
         categories_definition = """
 Primary Categories (select ONE only):
 
-1. MACRO_ECONOMIC - Macroeconomic indicators affecting overall market
-2. CENTRAL_BANK_POLICY - Monetary policy, interest rates, central bank decisions
-3. MACRO_NOBODY - Geopolitical/macro commentary without specific leaders/institutions
-4. GEOPOLITICAL_SPECIFIC - Geopolitical news with named countries/leaders/governments
-5. INDUSTRY_REGULATION - Regulatory/policy news targeting specific industry/sector
-6. EARNINGS_FINANCIALS - Company earnings, financial statements, revenue data
-7. CORPORATE_ACTIONS - M&A, stock splits, buybacks, spinoffs, bankruptcies
-8. MANAGEMENT_CHANGES - CEO, CFO, board member changes
-9. PRODUCT_TECH_UPDATE - New products, technology developments, R&D, launches
-10. BUSINESS_OPERATIONS - Supply chain, contracts, partnerships, operational decisions
-11. ACCIDENT_INCIDENT - Data breaches, accidents, recalls, lawsuits, fines
-12. ANALYST_RATING - Analyst upgrades/downgrades, price targets, commentary
-13. MARKET_SENTIMENT - Investor sentiment, market flows, surveys, risk appetite
-14. COMMODITY_FOREX_CRYPTO - Commodities, forex, cryptocurrency markets
-15. NON_FINANCIAL - Non-market news (sports, lifestyle, entertainment, culture)
+MACRO_ECONOMY - Concrete macroeconomic indicators or official data releases (e.g., CPI, GDP, PMI, unemployment reports)
+CENTRAL_BANK_POLICY - Official central bank decisions, rate changes, speeches by named officials
+GEOPOLITICAL_EVENT - Geopolitical news ONLY when involving specific named countries, leaders, governments, or concrete actions
+INDUSTRY_REGULATION - Regulatory/policy news targeting specific industry/sector
+CORPORATE_EARNINGS - Company earnings, financial statements, revenue data
+CORPORATE_ACTIONS - M&A, stock splits, buybacks, spinoffs, bankruptcies
+MANAGEMENT_CHANGE - CEO, CFO, board member changes
+INCIDENT_LEGAL - Lawsuits, fines, regulatory investigations, accidents, data breaches
+PRODUCT_TECH_UPDATE - New products, technology developments, R&D, clinical trial results
+BUSINESS_OPERATIONS - Supply chain, contracts, partnerships, operational decisions
+ANALYST_OPINION - Analyst upgrades/downgrades, price targets, commentary
+MARKET_SENTIMENT - Investor sentiment, market flows, surveys, risk appetite
+NON_FINANCIAL - Any general commentary, opinions without specific actors, or news unrelated to financial markets    
 
 Secondary Category:
 - If news is about specific company/stock, output stock ticker symbols (e.g., AAPL, TSLA)
 - If not company-specific, output empty string
 
+RULES:
+- You MUST choose one of the EXACT category names listed above.
+- NEVER invent new categories.
+- NEVER output numbers, abbreviations, or synonyms.
+- If the news does NOT mention a concrete decision, named institution, named government, named company, or measurable data → ALWAYS classify as "NON_FINANCIAL".
 """
 
         news_text = ""

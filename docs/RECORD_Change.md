@@ -570,53 +570,67 @@ WHERE category IN ('ERROR', 'UNCATEGORIZED')
 GROUP BY category;
 ```
 
-## 2025-11-25 00:45: Updated daily summary to exclude UNCATEGORIZED and ERROR categories
-Enhanced daily summary filtering to exclude all invalid/unwanted categories from summaries.
+## 2025-11-25 00:45: Changed to INCLUDED_CATEGORIES whitelist approach for daily summaries
+Replaced exclusion list with explicit whitelist (INCLUDED_CATEGORIES) for better control and clarity.
 
 ### Changes:
 
-**1. Added EXCLUDED_CATEGORIES to config (`src/config.py`):**
+**1. Added INCLUDED_CATEGORIES to config (`src/config.py`):**
 ```python
-EXCLUDED_CATEGORIES = [
-    "MACRO_NOBODY",      # Geopolitical commentary without specific leaders
-    "UNCATEGORIZED",     # Failed categorization (will retry)
-    "ERROR",             # Permanent errors (won't retry)
-    "NON_FINANCIAL",     # Non-market news
+INCLUDED_CATEGORIES = [
+    "MACRO_ECONOMIC",           # Macroeconomic indicators
+    "CENTRAL_BANK_POLICY",      # Monetary policy, interest rates
+    "GEOPOLITICAL_SPECIFIC",    # Geopolitical news with named entities
+    "INDUSTRY_REGULATION",      # Regulatory news for specific sectors
+    "EARNINGS_FINANCIALS",      # Earnings, revenue, financial statements
+    "CORPORATE_ACTIONS",        # M&A, stock splits, buybacks
+    "MANAGEMENT_CHANGES",       # CEO, CFO, board changes
+    "PRODUCT_TECH_UPDATE",      # New products, R&D, launches
+    "BUSINESS_OPERATIONS",      # Supply chain, contracts, partnerships
+    "ACCIDENT_INCIDENT",        # Breaches, accidents, recalls, lawsuits
+    "ANALYST_RATING",           # Analyst upgrades/downgrades
+    "MARKET_SENTIMENT",         # Investor sentiment, market flows
+    "COMMODITY_FOREX_CRYPTO",   # Commodities, forex, crypto
 ]
+# 13 valid categories total
+
+# Automatically excludes: MACRO_NOBODY, UNCATEGORIZED, ERROR, NON_FINANCIAL
 ```
 
 **2. Updated Daily Summary (`generate_daily_summary.py`):**
-- Imports `EXCLUDED_CATEGORIES` from config
-- Uses `.not_.in_("category", EXCLUDED_CATEGORIES)` filter
-- Excludes 4 categories: MACRO_NOBODY, UNCATEGORIZED, ERROR, NON_FINANCIAL
-- Shows excluded categories in log output
+- Changed from `EXCLUDED_CATEGORIES` to `INCLUDED_CATEGORIES`
+- Changed filter from `.not_.in_()` to `.in_()`
+- Whitelist approach: Only explicitly listed categories included
+- Automatically excludes any new invalid categories
 
 **3. Updated Documentation (`README.md`):**
-- Added EXCLUDED_CATEGORIES to configuration section
-- Updated daily summary description
+- Replaced EXCLUDED_CATEGORIES with INCLUDED_CATEGORIES
+- Shows all 13 valid categories
 
-### Previous vs New:
+### Blacklist vs Whitelist Approach:
 
-**Before:**
-- Only excluded `MACRO_NOBODY`
-- Hardcoded exclusion in query
+**Before (Blacklist):**
+```python
+.not_.in_("category", ["MACRO_NOBODY", "UNCATEGORIZED", "ERROR", "NON_FINANCIAL"])
+# Problem: Any new category automatically included
+```
 
-**After:**
-- Excludes 4 categories: MACRO_NOBODY, UNCATEGORIZED, ERROR, NON_FINANCIAL
-- Centralized in config (easy to modify)
-- Consistent across all summary generation
+**After (Whitelist):**
+```python
+.in_("category", INCLUDED_CATEGORIES)  # 13 explicit categories
+# Benefit: Only explicitly approved categories included
+```
 
 ### Benefits:
-- **Clean summaries**: Only properly categorized, relevant news included
-- **Centralized config**: Easy to add/remove excluded categories
-- **Consistent filtering**: Same exclusion list used everywhere
-- **Better quality**: No uncategorized or error items in summaries
+- **Explicit control**: Must explicitly add new categories to whitelist
+- **Safety**: New categories (valid or invalid) don't accidentally appear in summaries
+- **Clarity**: Clear list of what IS included vs what ISN'T
+- **Self-documenting**: Config shows exactly which categories are used
+- **Future-proof**: Adding new error categories doesn't affect summaries
 
-### Example Query:
-```python
-# Daily summary now fetches:
-.not_.in_("category", ["MACRO_NOBODY", "UNCATEGORIZED", "ERROR", "NON_FINANCIAL"])
-
-# Only includes valid financial news categories:
-# MACRO_ECONOMIC, CENTRAL_BANK_POLICY, GEOPOLITICAL_SPECIFIC, etc.
-```
+### Automatically Excluded:
+- MACRO_NOBODY (geopolitical commentary)
+- UNCATEGORIZED (temporary failures)
+- ERROR (permanent failures)
+- NON_FINANCIAL (non-market news)
+- Any future invalid categories added to the system

@@ -6,11 +6,12 @@ Automated general news fetching with LLM-based categorization for financial news
 
 The system provides a complete pipeline for:
 1. **Fetching general market news** from multiple sources (Finnhub, Polygon)
-2. **Storing raw data** in a data lake (stock_news_raw table)
-3. **LLM categorization** using Zhipu AI GLM-4-flash (15 categories)
-4. **Storing categorized news** in stock_news table (filters out NON_FINANCIAL)
-5. **Incremental updates** based on actual news publication timestamps
-6. **Daily summaries** - LLM-generated highlights stored in daily_highlights table
+2. **Fetching company-specific news** for tracked companies (Finnhub /company-news API)
+3. **Storing raw data** in a data lake (stock_news_raw table)
+4. **LLM categorization** using Zhipu AI GLM-4-flash (15 categories)
+5. **Storing categorized news** in stock_news table (filters out NON_FINANCIAL)
+6. **Incremental updates** based on actual news publication timestamps
+7. **Daily summaries** - LLM-generated highlights stored in daily_highlights table
 
 ## Architecture
 
@@ -131,6 +132,20 @@ Run this regularly (every 15-30 minutes or hourly). It will:
 - Every 1 hour for moderate freshness
 - Run daily summaries after market hours
 
+### Data Corrections
+
+The system automatically runs data corrections after LLM categorization to clean up malformed data:
+
+```bash
+# Automatic: Runs as STEP 6.5 in fetch_incremental_llm_new.py
+# Manual: Run corrections standalone
+uv run python run_data_corrections.py
+```
+
+**Current Corrections:**
+- **Empty String Cleanup**: Converts "empty string" text to NULL/empty in `symbol` and `secondary_category` columns
+- Runs automatically after each fetch to maintain data quality
+
 ### Daily Summary Generation
 
 Generate LLM-powered daily highlights from categorized news:
@@ -143,8 +158,10 @@ uv run python generate_daily_summary.py
 
 This will:
 - Fetch news from 6PM EST (previous day) to specified time
-- Exclude unwanted categories: `MACRO_NOBODY`, `UNCATEGORIZED`, `ERROR`, `NON_FINANCIAL`
+- Include only valid financial categories (whitelist: 13 categories)
+- Excludes: `MACRO_NOBODY`, `UNCATEGORIZED`, `ERROR`, `NON_FINANCIAL`
 - Generate structured summary using GLM-4-flash
+- **Save to local cache**: `.log/summary_YYYY-MM-DD_HH-MM-SS.log`
 - Store in `daily_highlights` table
 
 **Configuration (edit in script):**
@@ -152,6 +169,13 @@ This will:
 SUMMARY_DATE = "2025-11-23"  # None = today, or "YYYY-MM-DD"
 SUMMARY_TIME = "17:00:00"    # None = now, or "HH:MM:SS" (EST)
 ```
+
+**Log File Cache:**
+- All summaries saved to `.log/` directory with timestamp
+- Format: `summary_YYYY-MM-DD_HH-MM-SS.log`
+- Includes metadata (date, news count, categories) and full summary text
+- Terminal shows only 500-character preview
+- Useful for local caching when deployed
 
 **📖 See [Daily Summary Guide](docs/DAILY_SUMMARY_GUIDE.md) for:**
 - Complete usage instructions
@@ -195,12 +219,38 @@ FETCH_CONFIG = {
     "buffer_minutes": 1,           # Overlap window (0-10)
 }
 
-# Categories excluded from daily summaries
-EXCLUDED_CATEGORIES = [
-    "MACRO_NOBODY",      # Geopolitical commentary without specific leaders
-    "UNCATEGORIZED",     # Failed categorization (will retry)
-    "ERROR",             # Permanent errors (won't retry)
-    "NON_FINANCIAL",     # Non-market news
+# Company-specific news tracking (Finnhub /company-news API)
+TRACKED_COMPANIES = {
+    "AAPL": "Apple Inc.",
+    "TSLA": "Tesla Inc.",
+    "NVDA": "NVIDIA Corporation",
+    "MSFT": "Microsoft Corporation",
+    "GOOGL": "Alphabet Inc.",
+    "AMZN": "Amazon.com Inc.",
+    "META": "Meta Platforms Inc.",
+}
+
+COMPANY_NEWS_CONFIG = {
+    "enabled": True,               # Enable/disable company news fetching
+    "limit": 50,                   # Max news per company per fetch
+    "buffer_minutes": 1,           # Overlap window for incremental fetching
+}
+
+# Categories to include in daily summaries (whitelist approach)
+INCLUDED_CATEGORIES = [
+    "MACRO_ECONOMIC",           # Macroeconomic indicators
+    "CENTRAL_BANK_POLICY",      # Monetary policy, interest rates
+    "GEOPOLITICAL_SPECIFIC",    # Geopolitical news with named entities
+    "INDUSTRY_REGULATION",      # Regulatory news for specific sectors
+    "EARNINGS_FINANCIALS",      # Earnings, revenue, financial statements
+    "CORPORATE_ACTIONS",        # M&A, stock splits, buybacks
+    "MANAGEMENT_CHANGES",       # CEO, CFO, board changes
+    "PRODUCT_TECH_UPDATE",      # New products, R&D, launches
+    "BUSINESS_OPERATIONS",      # Supply chain, contracts, partnerships
+    "ACCIDENT_INCIDENT",        # Breaches, accidents, recalls, lawsuits
+    "ANALYST_RATING",           # Analyst upgrades/downgrades
+    "MARKET_SENTIMENT",         # Investor sentiment, market flows
+    "COMMODITY_FOREX_CRYPTO",   # Commodities, forex, crypto
 ]
 ```
 
@@ -209,7 +259,7 @@ EXCLUDED_CATEGORIES = [
 - `delay_between_batches`: Adds delay between batches to avoid hitting rate limits
 - `max_retries`: Automatically retries failed API calls with exponential backoff
 - `batch_size`: Reduced from 10 to 5 to avoid overwhelming the API
-- `EXCLUDED_CATEGORIES`: Categories excluded from daily summaries (configurable)
+- `INCLUDED_CATEGORIES`: Only these 13 categories included in summaries (whitelist)
 
 **📖 See [Configuration Guide](docs/CONFIGURATION_GUIDE.md) for:**
 - Detailed parameter explanations
@@ -288,7 +338,8 @@ news_db/
 │   │
 │   ├── db/
 │   │   ├── stock_news.py              # stock_news operations
-│   │   └── daily_highlights.py        # daily_highlights operations
+│   │   ├── daily_highlights.py        # daily_highlights operations
+│   │   └── data_corrections.py        # Database cleanup utilities
 │   │
 │   ├── storage/
 │   │   ├── raw_news_storage.py        # Raw data staging
@@ -300,6 +351,13 @@ news_db/
 ├── migrations/
 │   ├── create_daily_highlights_table.sql  # Daily highlights schema
 │   └── alter_add_finnhub_max_id.sql       # Add finnhub_max_id column
+│
+├── run_data_corrections.py           # Standalone data correction script
+│
+├── .log/                              # Local cache for daily summaries
+│   ├── .gitkeep
+│   ├── README.md
+│   └── summary_*.log                  # Cached summary files (gitignored)
 │
 └── docs/
     ├── DAILY_SUMMARY_GUIDE.md         # Daily summary documentation
@@ -409,6 +467,17 @@ ORDER BY summary_date DESC;
 - `daliysummary.txt` - Daily summary requirements
 
 ## Recent Changes
+
+**2025-11-29:**
+- ✅ Added company-specific news tracking using Finnhub /company-news API
+- ✅ Timestamp-based checkpoint tracking per company (same as polygon/finnhub)
+- ✅ Configurable company list in `TRACKED_COMPANIES` (7 companies by default)
+- ✅ Can enable/disable company news fetching via `COMPANY_NEWS_CONFIG['enabled']`
+- ✅ Added local log file caching for daily summaries (`.log/` directory)
+- ✅ Terminal now shows preview only, full summary cached locally
+- ✅ Added data correction system (`DataCorrector` class)
+- ✅ Automatic cleanup of "empty string" text in symbol/secondary_category columns
+- ✅ Corrections run automatically after LLM categorization (STEP 6.5)
 
 **2025-11-24:**
 - ✅ Reorganized codebase - moved all production code to `src/` folder

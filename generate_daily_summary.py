@@ -8,11 +8,14 @@ from supabase import create_client
 
 from src.services.daily_summarizer import DailySummarizer
 from src.db.daily_highlights import DailyHighlightDB
-from src.config import EXCLUDED_CATEGORIES
+from src.config import INCLUDED_CATEGORIES
 
 # EST timezone (UTC-5) - for user input/display only
 EST = timezone(timedelta(hours=-5))
 UTC = timezone.utc
+
+# Log directory for caching summaries
+LOG_DIR = Path(__file__).parent / ".log"
 
 # ============================================
 # CONFIGURATION: Change these as needed
@@ -93,7 +96,7 @@ async def main():
                 .select("id, title, summary, category, secondary_category, source, published_at")
                 .gte("published_at", from_time.isoformat())
                 .lte("published_at", to_time.isoformat())
-                .not_.in_("category", EXCLUDED_CATEGORIES)  # Exclude invalid/unwanted categories from config
+                .in_("category", INCLUDED_CATEGORIES)  # Only include valid financial categories (whitelist)
                 .order("published_at", desc=False)
                 .execute()
             )
@@ -101,8 +104,7 @@ async def main():
         result = await asyncio.to_thread(_fetch_news)
         news_items = result.data or []
 
-        excluded_str = ", ".join(EXCLUDED_CATEGORIES)
-        print(f"📰 Fetched {len(news_items)} news articles (excluding {excluded_str})")
+        print(f"📰 Fetched {len(news_items)} news articles (only including {len(INCLUDED_CATEGORIES)} valid categories)")
 
         # Count by category
         category_counts = {}
@@ -143,18 +145,73 @@ async def main():
             return
 
     print()
+
+    # ========================================
+    # STEP 3: Save to log file (local cache)
+    # ========================================
+    print("-" * 70)
+    print("STEP 3: Save to Log File (Local Cache)")
+    print("-" * 70)
+
+    # Create .log directory if not exists
+    LOG_DIR.mkdir(exist_ok=True)
+
+    # Generate log filename: summary_YYYY-MM-DD_HH-MM-SS.log
+    log_filename = f"summary_{summary_date_est.strftime('%Y-%m-%d')}_{summary_time_est.strftime('%H-%M-%S')}.log"
+    log_path = LOG_DIR / log_filename
+
+    try:
+        # Build complete log content
+        log_content = []
+        log_content.append("=" * 70)
+        log_content.append("📊 DAILY NEWS SUMMARY")
+        log_content.append("=" * 70)
+        log_content.append(f"Summary Date: {summary_date_est} {summary_time_est} EST")
+        log_content.append(f"News Window: {from_time_est.strftime('%m/%d %H:%M')} - {to_time_est.strftime('%m/%d %H:%M')} EST")
+        log_content.append(f"Generated: {now_est.strftime('%Y-%m-%d %H:%M:%S')} EST")
+        log_content.append(f"News Count: {len(news_items)}")
+        log_content.append("")
+
+        if category_counts:
+            log_content.append("📊 News by Category:")
+            for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
+                log_content.append(f"   {cat}: {count}")
+            log_content.append("")
+
+        log_content.append("=" * 70)
+        log_content.append("SUMMARY:")
+        log_content.append("=" * 70)
+        log_content.append(highlight_text)
+        log_content.append("=" * 70)
+
+        # Write to log file
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(log_content))
+
+        print(f"✅ Saved to log file: {log_path}")
+        print(f"   File size: {log_path.stat().st_size} bytes")
+
+    except Exception as e:
+        print(f"❌ Error saving log file: {e}")
+
+    print()
+
+    # Display summary in terminal (shortened)
     print("=" * 70)
-    print("Generated Summary:")
+    print("Generated Summary (Preview):")
     print("=" * 70)
-    print(highlight_text)
+    # Show first 500 characters as preview
+    preview = highlight_text[:500] + "..." if len(highlight_text) > 500 else highlight_text
+    print(preview)
     print("=" * 70)
+    print(f"📄 Full summary saved to: {log_path}")
     print()
 
     # ========================================
-    # STEP 3: Save to daily_highlights
+    # STEP 4: Save to Database
     # ========================================
     print("-" * 70)
-    print("STEP 3: Save to Database")
+    print("STEP 4: Save to Database")
     print("-" * 70)
 
     categories_included = list(category_counts.keys()) if news_items else []
@@ -186,6 +243,7 @@ async def main():
     print(f"🕐 Time: {summary_time_est} (EST)")
     print(f"📰 News Count: {len(news_items)}")
     print(f"📝 Summary Length: {len(highlight_text)} characters")
+    print(f"📄 Log File: {log_path}")
     print()
 
 

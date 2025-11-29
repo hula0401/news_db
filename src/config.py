@@ -33,13 +33,44 @@ FETCH_CONFIG = {
     "buffer_minutes": 1,           # Overlap window for incremental fetching (avoid gaps)
 }
 
-# Categories to exclude from daily summaries and analysis
-EXCLUDED_CATEGORIES = [
-    "MACRO_NOBODY",      # Geopolitical commentary without specific leaders
-    "UNCATEGORIZED",     # Failed to categorize (will be retried)
-    "ERROR",             # Permanent categorization errors (won't retry)
-    "NON_FINANCIAL",     # Non-market news (filtered during processing)
+# Company-specific news tracking (Finnhub /company-news API)
+TRACKED_COMPANIES = {
+    "AAPL": "Apple Inc.",
+    "TSLA": "Tesla Inc.",
+    "NVDA": "NVIDIA Corporation",
+    "MSFT": "Microsoft Corporation",
+    "GOOGL": "Alphabet Inc.",
+    "AMZN": "Amazon.com Inc.",
+    "META": "Meta Platforms Inc.",
+}
+
+COMPANY_NEWS_CONFIG = {
+    "enabled": True,               # Enable/disable company news fetching
+    "limit": 50,                   # Max news per company per fetch (Finnhub returns up to 50)
+    "buffer_minutes": 1,           # Overlap window for incremental fetching
+}
+
+# Categories to include in daily summaries and analysis (whitelist approach)
+INCLUDED_CATEGORIES = [
+    "MACRO_ECONOMY",        # Macroeconomic indicators and official data
+    "CENTRAL_BANK_POLICY",  # Interest rates, monetary policy decisions
+    "GEOPOLITICAL_EVENT",   # Geopolitical news with named governments/leaders
+    "INDUSTRY_REGULATION",  # Regulatory/policy actions on specific industries
+    "CORPORATE_EARNINGS",   # Earnings, guidance, financial statements
+    "CORPORATE_ACTIONS",    # M&A, buybacks, splits, spinoffs, bankruptcies
+    "MANAGEMENT_CHANGE",    # CEO/CFO/board-level leadership changes
+    "PRODUCT_TECH_UPDATE",  # Product launches, R&D, technology updates
+    "BUSINESS_OPERATIONS",  # Supply chain, contracts, partnerships, expansions
+    "INCIDENT_LEGAL",       # Lawsuits, investigations, accidents, breaches
+    "ANALYST_OPINION",      # Analyst rating changes, price targets
+    "MARKET_SENTIMENT",     # Investor sentiment, flows, surveys
 ]
+
+# Categories excluded from summaries (automatically derived from above)
+# MACRO_NOBODY - Geopolitical commentary without specific leaders
+# UNCATEGORIZED - Failed categorization (will be retried)
+# ERROR - Permanent categorization errors (won't retry)
+# NON_FINANCIAL - Non-market news (filtered during processing)
 
 # Action Priority Configuration (for distributed processing)
 # Lower number = higher priority (processed first)

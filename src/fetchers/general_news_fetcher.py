@@ -188,6 +188,73 @@ class GeneralNewsFetcher:
 
         return all_items
 
+    async def fetch_company_news(
+        self,
+        symbol: str,
+        from_timestamp: datetime,
+        to_timestamp: datetime
+    ) -> List[RawNewsItem]:
+        """
+        Fetch company-specific news from Finnhub /company-news API.
+
+        Args:
+            symbol: Stock ticker symbol (e.g., AAPL, TSLA)
+            from_timestamp: Start datetime (UTC)
+            to_timestamp: End datetime (UTC)
+
+        Returns:
+            List of RawNewsItem objects
+        """
+        try:
+            # Convert datetime to YYYY-MM-DD format for Finnhub API
+            from_date = from_timestamp.strftime("%Y-%m-%d")
+            to_date = to_timestamp.strftime("%Y-%m-%d")
+
+            print(f"🔍 Fetching Finnhub company news for {symbol} ({from_date} to {to_date})...")
+
+            response = await self.finnhub_client.get(
+                "https://finnhub.io/api/v1/company-news",
+                params={
+                    "symbol": symbol,
+                    "from": from_date,
+                    "to": to_date,
+                    "token": self.finnhub_api_key
+                }
+            )
+
+            if response.status_code == 200:
+                articles = response.json()
+
+                # Filter by timestamp (API returns date-based results, need to filter by exact time)
+                raw_items = []
+                for article in articles:
+                    try:
+                        # Use factory method to create RawNewsItem (extracts published_at)
+                        raw_item = RawNewsItem.from_finnhub_response(
+                            symbol=symbol,
+                            article_data=article,
+                            category=f"company_{symbol}"
+                        )
+
+                        # Filter by timestamp (only news after from_timestamp)
+                        if raw_item.published_at and raw_item.published_at > from_timestamp:
+                            raw_items.append(raw_item)
+
+                    except Exception as e:
+                        print(f"⚠️  Error converting article: {e}")
+                        continue
+
+                print(f"✅ Fetched {len(raw_items)} news for {symbol}")
+                return raw_items
+
+            else:
+                print(f"⚠️  Finnhub company-news API error for {symbol}: {response.status_code}")
+                return []
+
+        except Exception as e:
+            print(f"❌ Error fetching company news for {symbol}: {e}")
+            return []
+
     async def close(self):
         """Close HTTP clients."""
         await self.finnhub_client.aclose()

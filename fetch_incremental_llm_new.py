@@ -16,7 +16,8 @@ from src.storage.fetch_state_manager import FetchStateManager
 from src.processors.llm_news_processor import LLMNewsProcessor
 from src.services.llm_categorizer import NewsCategorizer
 from src.db.stock_news import StockNewsDB
-from src.config import LLM_CONFIG, FETCH_CONFIG
+from src.db.data_corrections import DataCorrector
+from src.config import LLM_CONFIG, FETCH_CONFIG, TRACKED_COMPANIES, COMPANY_NEWS_CONFIG
 
 
 async def main():
@@ -58,6 +59,7 @@ async def main():
     raw_storage = RawNewsStorage(client=supabase)
     fetch_state = FetchStateManager(client=supabase)
     stock_news_db = StockNewsDB(client=supabase)
+    data_corrector = DataCorrector(client=supabase)
     llm_processor = LLMNewsProcessor(
         stock_news_db=stock_news_db,
         raw_storage=raw_storage,
@@ -230,6 +232,55 @@ async def main():
     print()
 
     # ========================================
+    # STEP 3.5: Fetch company-specific news (if enabled)
+    # Priority: 3 (Normal - fetch_and_process)
+    # ========================================
+    if COMPANY_NEWS_CONFIG['enabled']:
+        print("-" * 70)
+        print("STEP 3.5: Fetch Company-Specific News (Priority 3)")
+        print("-" * 70)
+        print()
+
+        company_items = []
+        company_fetch_summary = {}
+
+        for symbol, company_name in TRACKED_COMPANIES.items():
+            print(f"🔍 Fetching news for {symbol} ({company_name})...")
+
+            # Get last fetch time for this company
+            # Note: fetch_source will be "finnhub_company_{symbol}" to match RawNewsItem
+            company_from, company_to = await fetch_state.get_last_fetch_time(
+                symbol=symbol,
+                fetch_source=f"finnhub_company_{symbol}",
+                buffer_minutes=COMPANY_NEWS_CONFIG['buffer_minutes']
+            )
+
+            # Strip timezone info
+            if company_from.tzinfo:
+                company_from = company_from.replace(tzinfo=None)
+            if company_to.tzinfo:
+                company_to = company_to.replace(tzinfo=None)
+
+            # Fetch company news
+            items = await general_fetcher.fetch_company_news(
+                symbol=symbol,
+                from_timestamp=company_from,
+                to_timestamp=company_to
+            )
+
+            company_items.extend(items)
+            company_fetch_summary[symbol] = len(items)
+
+        all_items.extend(company_items)
+
+        print()
+        print(f"📊 Company News Fetch Summary:")
+        for symbol, count in company_fetch_summary.items():
+            print(f"   {symbol}: {count} articles")
+        print(f"   Total company news: {len(company_items)} articles")
+        print()
+
+    # ========================================
     # STEP 4: Store in raw storage
     # ========================================
     print("-" * 70)
@@ -301,11 +352,53 @@ async def main():
         status="success"
     )
 
+    # Update fetch state for company news
+    if COMPANY_NEWS_CONFIG['enabled'] and 'company_items' in locals():
+        for symbol in TRACKED_COMPANIES.keys():
+            symbol_items = [i for i in company_items if i.symbol == symbol]
+
+            if symbol_items:
+                # Get max published_at from items
+                company_latest = max(
+                    (item.published_at for item in symbol_items if item.published_at),
+                    default=datetime.now(UTC).replace(tzinfo=None)
+                )
+                # Strip timezone if present
+                if company_latest and company_latest.tzinfo:
+                    company_latest = company_latest.replace(tzinfo=None)
+            else:
+                # No new items, use current time
+                company_latest = datetime.now(UTC).replace(tzinfo=None)
+
+            # Get from_time (retrieve it again to ensure we have the value)
+            # Note: fetch_source is "finnhub_company_{symbol}" to match RawNewsItem
+            company_from, company_to = await fetch_state.get_last_fetch_time(
+                symbol=symbol,
+                fetch_source=f"finnhub_company_{symbol}",
+                buffer_minutes=COMPANY_NEWS_CONFIG['buffer_minutes']
+            )
+
+            # Strip timezone info
+            if company_from.tzinfo:
+                company_from = company_from.replace(tzinfo=None)
+
+            await fetch_state.update_fetch_state(
+                symbol=symbol,
+                fetch_source=f"finnhub_company_{symbol}",
+                from_time=company_from,
+                to_time=company_latest,
+                articles_fetched=len(symbol_items),
+                articles_stored=len(symbol_items),
+                status="success"
+            )
+
     print(f"✅ Updated fetch state for all sources")
     print(f"   Finnhub max_id: {finnhub_max_id}")
     # Display Polygon time in EST
     polygon_latest_est = polygon_latest.replace(tzinfo=UTC).astimezone(EST)
     print(f"   Polygon latest: {polygon_latest_est.strftime('%Y-%m-%d %H:%M:%S')} EST")
+    if COMPANY_NEWS_CONFIG['enabled'] and 'company_items' in locals():
+        print(f"   Company news: Updated {len(TRACKED_COMPANIES)} companies")
     print()
 
     # ========================================
@@ -345,6 +438,17 @@ async def main():
         print("⚠️  No new articles to process")
         total_processed = 0
         total_skipped = 0
+
+    print()
+
+    # ========================================
+    # STEP 6.5: Data Corrections
+    # ========================================
+    print("-" * 70)
+    print("STEP 6.5: Database Corrections")
+    print("-" * 70)
+
+    correction_stats = await data_corrector.correct_empty_strings_in_stock_news()
 
     print()
 
